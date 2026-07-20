@@ -1,49 +1,61 @@
-# spd_matchtable
+# spd-matchtable
 
-A small, dependency-free Linux tool for one specific situation: you've got a
-DDR4 system with a **mixed kit** — modules bought at different times, from
-different revisions, maybe even different manufacturers — and it either
-won't train at a decent speed, or it "accidentally" booted at some auto
-setting and you want to know the best manual BIOS profile you can safely
-run without pulling sticks and testing them one at a time.
+**A Linux CLI tool that reads the raw SPD of every installed DDR4 module and
+computes the safest common memory timing profile for a mixed/mismatched RAM
+kit — a DDR4 mixed-kit compatibility calculator, decode-dimms with XMP
+support, and a free alternative to Thaiphoon Burner for this one specific
+job.**
+
+If you searched for anything like *"mixed RAM kit timings calculator"*,
+*"DIMM compatibility calculator"*, *"safe RAM overclock mismatched modules"*,
+*"XMP mixed kit"*, *"decode-dimms XMP"*, *"JEDEC SPD worst-case calculator"*,
+or *"ee1004 python"* — this is built for exactly that question.
+
+## What it's for
+
+You've got a DDR4 system with a **mixed kit** — modules bought at different
+times, from different revisions, maybe even different manufacturers — and
+it either won't train at a decent speed, or it "accidentally" booted at some
+auto setting and you want to know the best manual BIOS profile you can
+safely run, without pulling sticks and testing them one at a time in
+another machine.
 
 It reads the raw SPD EEPROM of every installed DDR4 module directly from
-the kernel, decodes the real JEDEC timing values (not just the printed
-box speed), and computes the **worst-case (governing) requirement per
-timing across all installed modules** at a set of candidate clock speeds —
-i.e. the tightest setting every stick can actually agree to at once.
+the kernel, decodes the real JEDEC timing values (not just the printed box
+speed), and computes the **worst-case (governing) requirement per timing
+across all installed modules** at a set of candidate clock speeds — i.e.
+the tightest setting every stick can actually agree to at once.
 
-## Why this and not [existing tool]?
+## How it compares
 
-Before writing this we checked. The landscape:
-
-| Tool | Platform | Reads XMP | Computes a cross-module worst-case table |
+| Tool | Platform | Reads XMP | Cross-module worst-case table |
 |---|---|---|---|
 | `decode-dimms` (i2c-tools) | Linux CLI | No | No |
 | hardinfo | Linux GUI | Partial | No |
 | Thaiphoon Burner | Windows, GUI | Yes, excellent | No — manual comparison only |
 | RAMMon | Windows | Basic | No |
 | Ryzen DRAM Calculator / ZenTimings | Windows | N/A | No — tunes for one known IC, not multiple installed modules |
-
-Nothing found reads every populated slot on a live system and automatically
-computes a governing value across all of them into a ready BIOS table,
-without a GUI, without Windows, without proprietary software. That's the
-specific gap this fills. If you know of prior art that already does this,
-please open an issue — happy to be pointed at it and defer.
+| **spd-matchtable** | **Linux CLI** | **Yes** | **Yes, automatic** |
 
 ## Requirements
 
 - Linux with the `ee1004` kernel module bound (standard on any distro with a
   recent kernel; DDR4 SPD EEPROMs use this driver). If nothing shows up,
   try `sudo modprobe ee1004`.
-- **Python 3.6+, standard library only.** No `pip install` of anything.
+- **Python 3.6+, standard library only** — no `pip install` of anything.
 - **No root required** in the normal case — the `ee1004` sysfs `eeprom`
-  attribute is world-readable on stock kernels. If your system restricts it,
-  you'll get a clear permission-denied warning naming the file, not a
-  crash.
-- DDR4 only. DDR5 uses a different SPD driver (`spd5118`) with a different
-  layout and is out of scope here — the tool will simply find no `ee1004`
-  devices and say so.
+  attribute is world-readable on stock kernels.
+- DDR4 only. DDR5 uses a different SPD driver (`spd5118`) and isn't
+  supported — the tool will simply find nothing and say so.
+
+## Install
+
+```
+git clone https://github.com/apoage/spd-matchtable.git
+cd spd-matchtable
+```
+
+No build step, no dependencies to install.
 
 ## Usage
 
@@ -51,10 +63,12 @@ please open an issue — happy to be pointed at it and defer.
 ./spd_matchtable.py                              # full text report
 ./spd_matchtable.py --freqs 2666,2933,3200        # only these candidate clocks
 ./spd_matchtable.py --json                        # raw decoded data, all fields
-./spd_matchtable.py --selftest                     # run the built-in correctness check
+./spd_matchtable.py --selftest                    # run the built-in correctness check
 ```
 
-Example output (4-module mixed kit, 2 dual-rank + 2 single-rank):
+## Example output
+
+4-module mixed kit, 2 dual-rank + 2 single-rank:
 
 ```
 === Installed modules ===
@@ -87,84 +101,34 @@ clock, but the same physical nanosecond requirement.
 
 Output is plain 80-column, strict-ASCII (`+`, `-`, `|` borders only, no
 Unicode box-drawing) on purpose — this is meant to also work cleanly on a
-bare recovery console (serial console, VGA text mode, no X11) where a
-mixed-kit system that barely booted is most likely to be diagnosed from.
+bare recovery console (serial console, VGA text mode, no X11), which is
+where a mixed-kit system that barely booted is most likely to be diagnosed
+from.
 
-## What it deliberately does *not* do
+## What to expect (and what it deliberately does *not* do)
 
-- **Does not write anything.** No EEPROM writes, no BIOS/UEFI interaction of
-  any kind. It opens SPD files `"rb"` only. If you're auditing this, that's
-  the one invariant worth checking first.
-- **Does not guess channel topology.** Whether two sticks share a channel is
-  a motherboard trace layout question SPD can't answer, so the tool doesn't
+- **Read-only, always.** No EEPROM writes, no BIOS/UEFI interaction of any
+  kind — it only reads sysfs files and prints numbers.
+- **Doesn't guess channel topology.** Whether two sticks share a channel is
+  a motherboard trace-layout question SPD can't answer, so the tool doesn't
   pretend to know it.
-- **Does not treat embedded XMP profiles as the answer for a mixed kit.**
-  They're printed for reference (a profile only applies if *every* installed
-  module supports it — and in a mixed kit, usually only some do). The match
-  table is computed independently, from each module's base JEDEC data, which
-  is the part that's actually guaranteed present on every DDR4 module.
-- **Does not replace a real stability test.** It tells you what's
-  *theoretically* the safe common ground per the modules' own declared
-  specs. Actual stability still depends on your specific board's memory
-  controller, trace layout, and silicon lottery. Always run a full
-  Memtest86 pass on anything this suggests before trusting it with real
-  data — the tool prints this reminder itself at the end of every report.
+- **Doesn't treat embedded XMP profiles as the answer for a mixed kit.**
+  They're printed for reference only — a profile only applies if *every*
+  installed module supports it, and in a mixed kit usually only some do.
+  The match table is computed independently from each module's base JEDEC
+  data, which is the part guaranteed present on every DDR4 module.
+- **Isn't a substitute for a real stability test.** It tells you the
+  theoretical safe common ground per the modules' own declared specs.
+  Actual stability still depends on your board's memory controller, trace
+  layout, and silicon lottery — always run a full Memtest86 pass on
+  anything this suggests before trusting it with real data (the tool
+  reprints this reminder at the end of every run).
+- A module that fails its own SPD CRC check is excluded from the match
+  table by default and clearly flagged, rather than silently included.
 
-## Safety / audit notes
-
-This was written expecting to be read by someone other than its author
-before being trusted, so a few things worth pointing out directly:
-
-- **CRC validated.** Every module's base SPD block is checked against its
-  own stored CRC-16 (the same check `decode-dimms` performs, values
-  cross-verified against it: `0xF56C` / `0xC6AB` in the shipped test
-  fixture). A module that fails CRC is excluded from the match table by
-  default and clearly flagged — the tool refuses to quietly compute a
-  "safe" table from data that might already be corrupt. Override with
-  `--include-invalid` if you understand the risk.
-- **String fields are sanitized**, not just null-stripped. SPD data is, in
-  principle, attacker-influenceable (a crafted or counterfeit EEPROM), so
-  the part-number field is hard-filtered to printable ASCII before it ever
-  reaches your terminal — this specifically blocks any terminal
-  escape-sequence injection via a malicious or corrupted SPD dump.
-- **No unhandled tracebacks in normal operation.** Missing kernel module,
-  permission errors, malformed/short reads, division-by-zero on a
-  blank/corrupt EEPROM, bad `--freqs` input — all produce a short message
-  and a non-zero exit code. Pass `--debug` to get the real traceback back
-  if you're troubleshooting the tool itself.
-- **`--selftest` is a real correctness check, not a smoke test.** The
-  fixture bytes were captured mechanically (`xxd -p`) from a real module's
-  live EEPROM, not hand-transcribed — a manual hex trace is exactly how a
-  transcription bug slips in (it happened once during this tool's own
-  development; see the offset confusion around SPD byte 17 that a byte-by-byte
-  re-check caught). The expected values it asserts against were independently
-  cross-checked against `decode-dimms` output and the module's published
-  vendor spec (Kingston DDR4-3200 CL16-18-18-36 @ 1.35V) before being
-  hard-coded, so a bug in the parser has an actual chance of being caught,
-  rather than the fixture and the code agreeing by construction.
-- **Only reads what it's told to read.** File discovery is
-  `glob.glob("/sys/bus/i2c/drivers/ee1004/*/eeprom")` — a fixed, non-user-
-  supplied kernel path, no shell involved, no path ever built from
-  untrusted input.
-
-## Why Python and not a shell script
-
-This does bit-level struct unpacking (nibble-packed 12-bit fields,
-signed fine-timebase corrections, 16-bit little-endian pairs) and
-floating-point nanosecond arithmetic with careful rounding, then a CRC-16
-bit-loop. Bash's integer arithmetic can do the bitwise part, but has no
-native floating point (routing every ns computation through `awk`/`bc`
-subprocesses instead), and the combination is considerably harder to
-review for correctness than the direct Python — which matters more here
-than shaving an interpreter-startup cost, given the whole point of
-publishing this is that someone can audit it and trust the numbers.
-
-Python 3 itself isn't an extra dependency in practice: this uses only the
-standard library (`argparse`, `glob`, `json`, `math`, `sys`), and `python3`
-ships by default on essentially every desktop Linux distribution. If
-you're specifically on a minimal/rescue environment without it, that's the
-one real gap — `apt install python3` / `pacman -S python` / equivalent is
-the fix, not a rewrite.
+See [Releases](https://github.com/apoage/spd-matchtable/releases) for
+what's changed release to release, including audit/hardening notes for
+anyone vetting a specific version before trusting it.
 
 ## Attribution
 
