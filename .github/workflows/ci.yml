@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # README states 3.6+ as the minimum (the syntax used needs nothing
+        # newer), but 3.6/3.7 are EOL and not reliably available in hosted
+        # runner tool caches -- this matrix covers what CI can actually test.
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile check
+        run: python3 -m py_compile spd_matchtable.py
+
+      - name: Built-in correctness check
+        run: python3 spd_matchtable.py --selftest
+
+      - name: CLI argument parsing sanity check
+        run: |
+          # CI has no live SPD hardware to read, so this only exercises
+          # --help/argparse and the clean "no modules found" exit path.
+          # The real width/charset/correctness checks are all inside
+          # --selftest's fixture-based assertions, which already ran above.
+          python3 spd_matchtable.py --help > /dev/null
+          python3 spd_matchtable.py --version

@@ -1,5 +1,10 @@
 # spd-matchtable
 
+[![CI](https://github.com/apoage/spd-matchtable/actions/workflows/ci.yml/badge.svg)](https://github.com/apoage/spd-matchtable/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.6+](https://img.shields.io/badge/python-3.6%2B-blue.svg)](https://www.python.org/)
+[![Wiki](https://img.shields.io/badge/docs-wiki-informational.svg)](https://github.com/apoage/spd-matchtable/wiki)
+
 **A Linux CLI tool that reads the raw SPD of every installed DDR4 module and
 computes the safest common memory timing profile for a mixed/mismatched RAM
 kit — a DDR4 mixed-kit compatibility calculator, decode-dimms with XMP
@@ -181,6 +186,20 @@ See [Releases](https://github.com/apoage/spd-matchtable/releases) for
 what's changed release to release, including audit/hardening notes for
 anyone vetting a specific version before trusting it.
 
+## What each value actually means
+
+The **[wiki](https://github.com/apoage/spd-matchtable/wiki)** explains,
+in real technical depth, what every timing this tool reads or computes
+physically gates in a DRAM chip — not just the abbreviation, but why it
+exists in the protocol and what breaks if it's wrong: primary timings
+(CL/tRCD/tRP/tRAS/tRC), refresh (tRFC), bank-group/activation timings
+(tFAW/tRRD/tCCD), write/turnaround timings (tWR/tWTR/tRTP), the inferred
+values (tCWL, command rate), voltage, the SPD byte structure itself, the
+capacity formula, module-type/ECC compatibility, XMP profiles, the
+worst-case computation methodology (including a real bug it found and
+fixed), and a design-decisions FAQ answering the "why not just..."
+questions this tool's approach invites.
+
 ## No warranty
 
 This software is provided **as is, with absolutely no warranty of any
@@ -206,6 +225,15 @@ were taken from [integralfx/DDR4XMPEditor](https://github.com/integralfx/DDR4XMP
 (`DDR4SPD/SPD.cs`, `DDR4SPD/XMP.cs`), an open-source DDR4 SPD/XMP editor.
 Base JEDEC field offsets were cross-checked against that project's `RawSPD`
 struct and against `decode-dimms` (i2c-tools) output.
+
+## Contributing
+
+See `CONTRIBUTING.md` — in particular the section on verifying byte
+offsets programmatically rather than by hand, which this project's own
+history shows is exactly where mistakes creep in (twice, so far — once
+in this tool's own early code, once in an external review). Security-
+relevant reports (a case where crafted/corrupt SPD data produces
+something worse than a clean labeled error) are covered in `SECURITY.md`.
 
 ## License
 
