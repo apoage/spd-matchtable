@@ -234,6 +234,7 @@ history shows is exactly where mistakes creep in (twice, so far — once
 in this tool's own early code, once in an external review). Security-
 relevant reports (a case where crafted/corrupt SPD data produces
 something worse than a clean labeled error) are covered in `SECURITY.md`.
+Participation is governed by `CODE_OF_CONDUCT.md`.
 
 ## License
 
