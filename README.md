@@ -226,6 +226,22 @@ were taken from [integralfx/DDR4XMPEditor](https://github.com/integralfx/DDR4XMP
 Base JEDEC field offsets were cross-checked against that project's `RawSPD`
 struct and against `decode-dimms` (i2c-tools) output.
 
+## Built with AI assistance
+
+Worth stating plainly rather than leaving implicit: this project — the
+decoder itself, the CLI, the wiki, and the repo scaffolding — was built
+in collaboration with **Claude** (Anthropic). The v1.0.1 correctness and
+safety fixes were prompted by an independent code review from **Kimi**
+(Moonshot AI), which caught a real bug (the `tRC` understatement
+documented in [[Worst Case Methodology]](https://github.com/apoage/spd-matchtable/wiki/Worst-Case-Methodology))
+— but that same review also cited a wrong byte offset for one of its own
+suggested fixes, which had to be independently re-derived and corrected
+before being applied (see `RELEASE_NOTES.md`, v1.0.1). Nothing an AI
+suggested — model or reviewer — went in without being checked against
+real reference hardware/data first; that discipline is the actual point
+of this project's development history, not an afterthought applied to
+otherwise-blind AI output.
+
 ## Contributing
 
 See `CONTRIBUTING.md` — in particular the section on verifying byte
