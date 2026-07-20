@@ -228,19 +228,32 @@ struct and against `decode-dimms` (i2c-tools) output.
 
 ## Built with AI assistance
 
-Worth stating plainly rather than leaving implicit: this project — the
-decoder itself, the CLI, the wiki, and the repo scaffolding — was built
-in collaboration with **Claude** (Anthropic). The v1.0.1 correctness and
-safety fixes were prompted by an independent code review from **Kimi**
-(Moonshot AI), which caught a real bug (the `tRC` understatement
-documented in [[Worst Case Methodology]](https://github.com/apoage/spd-matchtable/wiki/Worst-Case-Methodology))
-— but that same review also cited a wrong byte offset for one of its own
-suggested fixes, which had to be independently re-derived and corrected
-before being applied (see `RELEASE_NOTES.md`, v1.0.1). Nothing an AI
-suggested — model or reviewer — went in without being checked against
-real reference hardware/data first; that discipline is the actual point
-of this project's development history, not an afterthought applied to
-otherwise-blind AI output.
+This project was built in collaboration with two AI models, and neither
+was error-free — that's worth recording honestly, not smoothing over.
+
+**Claude** (Anthropic) did most of the implementation, the wiki, and the
+repo scaffolding, and made real mistakes in the process, each caught
+before shipping rather than after: an early manual byte-offset count
+(SPD byte 0x11) was momentarily miscounted before a re-check caught it;
+a hand-rewrapped hex string for the `--selftest` fixture silently dropped
+characters (478 bytes instead of the required 512), caught only because
+the selftest itself failed; and an earlier chat summary stated `CL=22`
+at 3200 MT/s where the correct, later-verified value is `23` (a plain
+arithmetic slip — 14.0ns / 0.625ns rounds up, not down).
+
+**Kimi** (Moonshot AI) performed an independent review of v1.0.0 that
+caught a real, previously-unnoticed bug (the `tRC` understatement — see
+[[Worst Case Methodology]](https://github.com/apoage/spd-matchtable/wiki/Worst-Case-Methodology))
+and correctly flagged a display-only rounding artifact (`2401` vs the
+real `2400` MT/s bin) — but one of its own suggested fixes cited the
+wrong byte offset (`0x10` instead of the correct `0x11`), which had to be
+independently re-derived before being applied.
+
+Same mechanism caught every mistake above, regardless of which model
+made it: check against real reference hardware and a second independent
+source before trusting a number. That's the actual point of this
+project's development history — not a scoreboard of whose output was
+cleaner.
 
 ## Contributing
 
