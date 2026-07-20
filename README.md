@@ -49,11 +49,23 @@ No build step, no dependencies to install.
 ## Usage
 
 ```
-./spd_matchtable.py                              # full text report
+./spd_matchtable.py                              # full text report, live system
 ./spd_matchtable.py --freqs 2666,2933,3200        # only these candidate clocks
-./spd_matchtable.py --json                        # raw decoded data, all fields
+./spd_matchtable.py --json                        # decoded data + computed tables, all fields
 ./spd_matchtable.py --selftest                    # run the built-in correctness check
+./spd_matchtable.py stick1.bin stick2.bin ...      # decode offline dumps instead of live sysfs
 ```
+
+The offline mode is for the exact situation this tool is written for: a
+system that only boots with some sticks installed, or SPDs you'd rather
+dump and analyze one module at a time. Produce a dump with:
+
+```
+cat /sys/bus/i2c/drivers/ee1004/1-0050/eeprom > stick1.bin
+```
+
+then pass however many `.bin` files you've collected (from this machine,
+another machine, or a forum post) as arguments in place of live discovery.
 
 ## Example output
 
@@ -61,16 +73,23 @@ No build step, no dependencies to install.
 
 ```
 === Installed modules ===
-+--------+------------------+------+-------+---------+--------+-----+
-| Slot   | Part Number      | Rank | Width | Density | MaxMTs | CRC |
-+--------+------------------+------+-------+---------+--------+-----+
-| 1-0050 | KF3200C16D4/16GX | 2    | x8    | 8Gb     | 2401   | OK  |
-| 1-0051 | KF3200C16D4/16GX | 2    | x8    | 8Gb     | 2401   | OK  |
-| 1-0052 | KF432C16BB3/16   | 1    | x8    | 16Gb    | 3200   | OK  |
-| 1-0053 | KF432C16BB/8     | 1    | x16   | 16Gb    | 3200   | OK  |
-+--------+------------------+------+-------+---------+--------+-----+
+-- columns 1/2 --
++--------+------------------+----------+------+-------+---------+-------+
+| Slot   | Part Number      | Capacity | Rank | Width | Density | Type  |
++--------+------------------+----------+------+-------+---------+-------+
+| 1-0050 | KF3200C16D4/16GX | 16GB     | 2    | x8    | 8Gb     | UDIMM |
+| 1-0051 | KF3200C16D4/16GX | 16GB     | 2    | x8    | 8Gb     | UDIMM |
+| 1-0052 | KF432C16BB3/16   | 16GB     | 1    | x8    | 16Gb    | UDIMM |
+| 1-0053 | KF432C16BB/8     | 8GB      | 1    | x16   | 16Gb    | UDIMM |
++--------+------------------+----------+------+-------+---------+-------+
+-- columns 2/2 --
++--------+-----+--------+-----+----------+----------+
+| Slot   | ECC | MaxMTs | CRC | Serial   | MfgDate  |
++--------+-----+--------+-----+----------+----------+
+...
++--------+-----+--------+-----+----------+----------+
 
-Base SPD ceiling: 2401 MT/s (limited by 1-0050, 1-0051)
+Base SPD ceiling: 2400 MT/s (limited by 1-0050, 1-0051)
 
 === Match table: cycles needed to satisfy ALL modules, per candidate MT/s ===
 +-------+------+------+------+------+------+
@@ -81,7 +100,29 @@ Base SPD ceiling: 2401 MT/s (limited by 1-0050, 1-0051)
 | tRC   | 56   | 62   | 69   | 70   | 75   |
 ...
 +-------+------+------+------+------+------+
+
+=== OC required beyond each module's own base JEDEC spec ===
+  2400 MT/s: none (native for all modules)
+  2666 MT/s: 1-0050, 1-0051
+  ...
+
+=== Suggested starting point ===
+@ 2400 MT/s (from SPD, zero OC required): CL17-17-17-39 tRC56 tRFC1=660
+tFAW=36 tRRD_S/L=7/8 tCCD_L=6 tWR=18 tWTR_S/L=3/9 @ 1.20V
+Inferred, NOT from SPD -- generic starting points, verify in BIOS: tCWL=16
+tRTP~=9 tCCD_S=4 Command Rate=2T
 ```
+
+The two lines under "Suggested starting point" are deliberately kept
+separate: the first line is entirely derived from the modules' own SPD
+data; the second is generic OC-guide heuristics (`tCWL = CL-1`, a ~7.5ns
+`tRTP` estimate, `tCCD_S=4`, and a rank/DIMM-count-based command-rate
+guess) that DDR4 SPD does not encode at all — labeled as such rather than
+presented with the same authority as the measured values.
+
+If any installed modules are a mix of RDIMM/UDIMM or ECC/non-ECC — the two
+most common reasons a mixed kit refuses to POST at all rather than just
+underperforming — a `!!` warning prints right after the modules table.
 
 `tRC` is enforced as at least `tRAS + tRP` (the physical
 ACT→[tRAS]→PRE→[tRP]→ACT chain), not just the largest value any one module
@@ -125,6 +166,16 @@ from.
 - A module that fails its own SPD CRC check, isn't DDR4, uses a
   non-standard timebase encoding, or decodes to a negative/nonsensical
   timing is rejected with a clear error rather than silently trusted.
+- **Does check for the two most common "won't POST at all" mismatches** —
+  mixing registered (RDIMM/LRDIMM) with unbuffered (UDIMM) modules, or
+  mixing ECC with non-ECC — and prints a loud warning if either is present,
+  since these are worse failure modes than just missing a target speed.
+- **The "OC required" and "Suggested starting point" sections make
+  inferences, and say so.** Which modules need overclocking beyond their
+  own SPD at a given candidate speed, and the generic secondary-timing
+  guesses (`tCWL`, `tRTP`, `tCCD_S`, command rate) that DDR4 SPD doesn't
+  encode at all, are both clearly separated from the SPD-measured numbers
+  rather than presented with the same certainty.
 
 See [Releases](https://github.com/apoage/spd-matchtable/releases) for
 what's changed release to release, including audit/hardening notes for

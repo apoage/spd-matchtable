@@ -2,12 +2,14 @@
 """Byte-accurate DDR4 SPD decoder and cross-module timing match table.
 
 Reads raw SPD EEPROM data straight from the ee1004 kernel driver's sysfs
-binary attribute (no dmidecode/decode-dimms dependency), decodes the base
-JEDEC timing block per installed module, and computes the worst-case
-(governing) timing every installed module needs satisfied simultaneously at
-a set of candidate frequencies -- i.e. a safe manual BIOS starting point for
-a mixed-kit system, derived independently of any single module's embedded
-XMP profile.
+binary attribute, or from offline dumps passed as file arguments (no
+dmidecode/decode-dimms dependency either way), decodes the base JEDEC
+timing block per installed module, and computes the worst-case (governing)
+timing every installed module needs satisfied simultaneously at a set of
+candidate frequencies -- i.e. a safe manual BIOS starting point for a
+mixed-kit system, derived independently of any single module's embedded
+XMP profile. Also flags module-type (RDIMM/UDIMM) and ECC mismatches, which
+are the most common reasons a mixed kit fails to POST at all.
 
 SAFETY NOTES
   - Read-only. This tool never writes to an SPD EEPROM and never touches
@@ -33,17 +35,32 @@ import argparse
 import glob
 import json
 import math
+import os
+import re
 import sys
+import tempfile
 import textwrap
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 MTB = 0.125  # ns per medium-timebase tick
 FTB = 0.001  # ns per fine-timebase tick
 
 DENSITY_MAP = ["256Mb", "512Mb", "1Gb", "2Gb", "4Gb", "8Gb", "16Gb", "32Gb", "12Gb", "24Gb"]
+DENSITY_GB = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 12, 24]  # numeric Gb, parallel to DENSITY_MAP
 DEV_WIDTH = [4, 8, 16, 32, None, None, None, None]
 PKG_RANKS = [1, 2, 3, 4, 5, 6, 7, 8]
+
+MODULE_TYPE_NAME = {
+    0: "Extended", 1: "RDIMM", 2: "UDIMM", 3: "SO-DIMM", 4: "LRDIMM",
+    5: "Mini-RDIMM", 6: "Mini-UDIMM", 8: "72b-SO-RDIMM", 9: "72b-SO-UDIMM",
+    10: "16b-SO-DIMM", 11: "32b-SO-DIMM",
+}
+MODULE_TYPE_FAMILY = {
+    1: "registered", 4: "registered", 5: "registered", 8: "registered",
+    2: "unbuffered", 3: "unbuffered", 6: "unbuffered", 9: "unbuffered",
+    10: "unbuffered", 11: "unbuffered",
+}
 
 BASE_PARAMS = ["CL", "tRCD", "tRP", "tRAS", "tRC", "tRFC1", "tRFC2", "tRFC4",
                "tFAW", "tRRDS", "tRRDL", "tCCDL", "tWR", "tWTRS", "tWTRL"]
@@ -95,6 +112,22 @@ def verify_crc(d):
 DDR4_TYPE = 0x0C
 STANDARD_TIMEBASE = 0x00  # byte 0x11: only combination JEDEC defines (MTB=125ps, FTB=1ps)
 TCKMIN_SANE_RANGE = (0.3, 3.0)  # ns; covers ~666-6666 MT/s, comfortably beyond real DDR4 bins
+FREQ_SANE_RANGE = (800, 8000)  # MT/s; a --freqs value outside this is almost certainly a typo
+
+# JEDEC publishes tCKmin to 3 decimal places (e.g. DDR4-2400's is "0.833 ns"),
+# which is itself already a rounding of the true repeating fraction (5/6 ns).
+# Re-deriving frequency as 2000/tCKmin from that rounded value lands on
+# 2400.96, not 2400 -- a display artifact, not a different real speed bin.
+# Snapping to the nearest standard bin (only within a tight tolerance, so an
+# actually non-standard tCKmin still shows its own plain value) keeps the
+# ceiling line, the match table's own frequency columns, and the cheat-sheet
+# math all consistent with each other instead of off by a fractional cycle.
+JEDEC_SPEED_BINS = [1600, 1866, 2133, 2400, 2666, 2933, 3200, 3466, 3733, 4000, 4266, 4400]
+
+
+def snap_to_jedec_bin(freq, tolerance=15):
+    nearest = min(JEDEC_SPEED_BINS, key=lambda b: abs(b - freq))
+    return nearest if abs(nearest - freq) <= tolerance else round(freq)
 
 
 def _nonneg(name, ns):
@@ -130,24 +163,42 @@ def parse_base(d):
 
     density_idx = banks & 0x0F
     density = DENSITY_MAP[density_idx] if density_idx < len(DENSITY_MAP) else "?"
+    density_gb = DENSITY_GB[density_idx] if density_idx < len(DENSITY_GB) else None
 
     width_idx = org & 0x7
     ranks_idx = (org >> 3) & 0x7
     width = DEV_WIDTH[width_idx]
     ranks = PKG_RANKS[ranks_idx] if ranks_idx < len(PKG_RANKS) else None
 
+    capacity_gb = None
+    if density_gb is not None and width and ranks:
+        # Standard non-ECC monolithic-DIMM capacity formula, verified against
+        # this project's own 3 known reference capacities (16GB/16GB/8GB)
+        # before being trusted: density_Gb * (64/width) * ranks / 8.
+        capacity_gb = density_gb * (64 / width) * ranks / 8
+
+    module_type_code = d[0x03] & 0x0F
+    ecc = bool((d[0x0D] >> 3) & 0x3)
+
     part = sanitize_text(d[0x149:0x15D].decode("ascii", "replace").replace("\x00", ""))
     mfg_year, mfg_week = d[0x143], d[0x144]
+    serial = d[0x145:0x149].hex().upper()
 
     return {
         "part": part or "(unreadable)",
         "mfgDate": f"20{mfg_year:02x}-W{mfg_week:02x}",
+        "serial": serial,
         "density": density,
+        "capacityGB": capacity_gb,
         "ranks": ranks,
         "width": width,
+        "moduleTypeCode": module_type_code,
+        "moduleType": MODULE_TYPE_NAME.get(module_type_code, f"unknown(0x{module_type_code:02X})"),
+        "moduleFamily": MODULE_TYPE_FAMILY.get(module_type_code, "other"),
+        "ecc": ecc,
         "tCKmin": round(tCKmin, 4),
         "tCKmax": round(tCKmax, 4),
-        "freq_max": round(2000 / tCKmin, 1),
+        "freq_max": snap_to_jedec_bin(2000 / tCKmin),
         "CL": round(_nonneg("CL", d[0x18] * MTB + s8(d[0x7B]) * FTB), 4),
         "tRCD": round(_nonneg("tRCD", d[0x19] * MTB + s8(d[0x7A]) * FTB), 4),
         "tRP": round(_nonneg("tRP", d[0x1A] * MTB + s8(d[0x79]) * FTB), 4),
@@ -225,6 +276,13 @@ def parse_module(d, slot):
     return {"slot": slot, "base": base, "xmp": xmp, "crc": crc}
 
 
+def natural_sort_key(slot):
+    """'1-0050' before '2-0050' before '10-0050': split into digit/non-digit
+    runs so numeric parts compare numerically, not lexically."""
+    return [int(part) if part.isdigit() else part
+            for part in re.split(r"(\d+)", slot)]
+
+
 def discover_modules(warn=print):
     modules = []
     paths = sorted(glob.glob(EEPROM_GLOB))
@@ -244,7 +302,53 @@ def discover_modules(warn=print):
             modules.append(parse_module(d, slot))
         except SPDError as e:
             warn(f"warning: {slot}: {e} -- skipping this module")
+    modules.sort(key=lambda m: natural_sort_key(m["slot"]))
     return modules
+
+
+def load_modules_from_files(paths, warn=print):
+    """Offline mode: decode raw SPD dumps taken earlier (e.g. one DIMM at a
+    time in another machine, or `cat .../eeprom > stick.bin` on this one) --
+    the scenario the README is written for, where the live system may only
+    boot with a subset of sticks installed."""
+    modules = []
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                d = f.read()
+        except OSError as e:
+            warn(f"warning: could not read {path}: {e}")
+            continue
+        slot = os.path.basename(path)
+        try:
+            modules.append(parse_module(d, slot))
+        except SPDError as e:
+            warn(f"warning: {slot}: {e} -- skipping this file")
+    modules.sort(key=lambda m: natural_sort_key(m["slot"]))
+    return modules
+
+
+def compatibility_warnings(modules):
+    """Loud, cheap, high-value checks: these are the #1/#2 reasons a mixed
+    kit refuses to POST at all, not just fails to hit a target speed."""
+    warnings = []
+
+    families = {m["slot"]: m["base"]["moduleFamily"] for m in modules}
+    distinct = set(families.values()) - {"other"}
+    if len(distinct) > 1:
+        detail = ", ".join(f"{slot}={fam}" for slot, fam in families.items())
+        warnings.append(
+            "MODULE TYPE MISMATCH: mixing registered (RDIMM/LRDIMM) and "
+            f"unbuffered (UDIMM) modules will not POST -- {detail}")
+
+    ecc = {m["slot"]: m["base"]["ecc"] for m in modules}
+    if len(set(ecc.values())) > 1:
+        detail = ", ".join(f"{slot}={'ECC' if v else 'non-ECC'}" for slot, v in ecc.items())
+        warnings.append(
+            "ECC MISMATCH: most boards require all-ECC or all-non-ECC "
+            f"populated -- {detail}")
+
+    return warnings
 
 
 def worst_case(modules):
@@ -359,14 +463,20 @@ def print_report(modules, freqs, include_invalid, warn=print):
     for m in modules:
         b, crc = m["base"], m["crc"]
         crc_str = "OK" if crc["base_ok"] else "FAIL"
-        mod_rows.append([m["slot"], b["part"], b["ranks"], f"x{b['width']}",
-                          b["density"], f"{b['freq_max']:.0f}", crc_str])
+        cap = f"{b['capacityGB']:.0f}GB" if b["capacityGB"] is not None else "?"
+        mod_rows.append([m["slot"], b["part"], cap, b["ranks"], f"x{b['width']}",
+                          b["density"], b["moduleType"], "Y" if b["ecc"] else "N",
+                          f"{b['freq_max']:.0f}", crc_str, b["serial"], b["mfgDate"]])
         if crc["base_ok"] or include_invalid:
             usable.append(m)
         else:
             warn(f"excluding {m['slot']} from match table (CRC mismatch); "
                  f"pass --include-invalid to force its inclusion")
-    print_table(["Slot", "Part Number", "Rank", "Width", "Density", "MaxMTs", "CRC"], mod_rows)
+    print_table(["Slot", "Part Number", "Capacity", "Rank", "Width", "Density",
+                 "Type", "ECC", "MaxMTs", "CRC", "Serial", "MfgDate"], mod_rows)
+
+    for w in compatibility_warnings(modules):
+        print(f"!! {w}")
 
     if not usable:
         warn("No module passed CRC validation -- refusing to compute a match table "
@@ -389,6 +499,16 @@ def print_report(modules, freqs, include_invalid, warn=print):
     print_table(["Param", "ns", "Source"],
                 [[p, f"{worst[p]:.3f}", source[p]] for p in BASE_PARAMS])
 
+    lo_sane, hi_sane = FREQ_SANE_RANGE
+    min_tckmax = min(m["base"]["tCKmax"] for m in usable)
+    for f in freqs:
+        if not (lo_sane <= f <= hi_sane):
+            warn(f"'{f}' MT/s is outside the realistic DDR4 range {FREQ_SANE_RANGE} "
+                 f"-- check for a typo")
+        if 2000.0 / f > min_tckmax:
+            warn(f"{f} MT/s is below at least one module's minimum supported speed "
+                 f"(tCKmax exceeded) -- unusually slow, verify this is intentional")
+
     print("\n=== Match table: cycles needed to satisfy ALL modules, per candidate MT/s ===")
     print_table(["Param"] + [str(c) for c in freqs],
                 [[p] + [math.ceil(round(worst[p] / (2000.0 / c), 6)) for c in freqs]
@@ -397,6 +517,37 @@ def print_report(modules, freqs, include_invalid, warn=print):
     if invalid_included:
         print(f"WARNING: table above includes CRC-failed module(s): "
               f"{', '.join(invalid_included)} -- numbers may be corrupt.")
+
+    print("\n=== OC required beyond each module's own base JEDEC spec ===")
+    for f in freqs:
+        oc = [m["slot"] for m in usable if f > m["base"]["freq_max"]]
+        text = f"{f} MT/s: " + (", ".join(oc) if oc else "none (native for all modules)")
+        for line in textwrap.wrap(text, MAX_TERM_WIDTH - 2):
+            print(f"  {line}")
+    print("(a module with an embedded XMP profile above near this speed suggests")
+    print(" its own OC voltage; a module with none has no vendor-declared OC target)")
+
+    print("\n=== Suggested starting point ===")
+    tck = 2000.0 / guaranteed
+
+    def cyc(p):
+        return math.ceil(round(worst[p] / tck, 6))
+
+    spd_line = (f"@ {guaranteed:.0f} MT/s (from SPD, zero OC required): "
+                f"CL{cyc('CL')}-{cyc('tRCD')}-{cyc('tRP')}-{cyc('tRAS')} "
+                f"tRC{cyc('tRC')} tRFC1={cyc('tRFC1')} tFAW={cyc('tFAW')} "
+                f"tRRD_S/L={cyc('tRRDS')}/{cyc('tRRDL')} tCCD_L={cyc('tCCDL')} "
+                f"tWR={cyc('tWR')} tWTR_S/L={cyc('tWTRS')}/{cyc('tWTRL')} @ 1.20V")
+    for line in textwrap.wrap(spd_line, MAX_TERM_WIDTH):
+        print(line)
+
+    two_dpc_or_multirank = len(usable) > 2 or any((m["base"]["ranks"] or 0) > 1 for m in usable)
+    inferred_line = (
+        f"Inferred, NOT from SPD -- generic starting points, verify in BIOS: "
+        f"tCWL={cyc('CL') - 1} tRTP~={math.ceil(round(7.5 / tck, 6))} tCCD_S=4 "
+        f"Command Rate={'2T' if two_dpc_or_multirank else '1T (Auto)'}")
+    for line in textwrap.wrap(inferred_line, MAX_TERM_WIDTH):
+        print(line)
 
     print("\n=== Embedded XMP profiles (informational only, not used in match table) ===")
     xmp_rows = []
@@ -485,6 +636,12 @@ def selftest():
     check("width", b["width"], 8)
     check("density", b["density"], "8Gb")
     check("tCKmin", b["tCKmin"], 0.833)
+    check("freq_max snaps to JEDEC bin (2400, not the raw 2400.96 artifact)",
+          b["freq_max"], 2400)
+    check("capacity_gb formula", b["capacityGB"], 16.0)
+    check("module type decoded as UDIMM", b["moduleType"], "UDIMM")
+    check("ecc decoded false for consumer UDIMM", b["ecc"], False)
+    check("serial matches decode-dimms cross-check", b["serial"], "03E966E3")
     check("CL (ns)", b["CL"], 13.75)
     check("tRCD (ns)", b["tRCD"], 13.75)
     check("tRP (ns)", b["tRP"], 13.75)
@@ -559,6 +716,39 @@ def selftest():
     check("tRC floor source is annotated, not silently substituted",
           "floor" in src["tRC"], True)
 
+    check("natural_sort_key orders 2-0050 before 10-0050",
+          sorted(["10-0050", "2-0050", "1-0050"], key=natural_sort_key),
+          ["1-0050", "2-0050", "10-0050"])
+
+    rdimm_udimm = [
+        {"slot": "A", "base": {"moduleFamily": "unbuffered", "ecc": False}},
+        {"slot": "B", "base": {"moduleFamily": "registered", "ecc": False}},
+    ]
+    warnings = compatibility_warnings(rdimm_udimm)
+    check("detects RDIMM/UDIMM mismatch", any("MODULE TYPE MISMATCH" in w for w in warnings), True)
+
+    ecc_mismatch = [
+        {"slot": "A", "base": {"moduleFamily": "unbuffered", "ecc": True}},
+        {"slot": "B", "base": {"moduleFamily": "unbuffered", "ecc": False}},
+    ]
+    warnings = compatibility_warnings(ecc_mismatch)
+    check("detects ECC/non-ECC mismatch", any("ECC MISMATCH" in w for w in warnings), True)
+
+    matched_kit = [
+        {"slot": "A", "base": {"moduleFamily": "unbuffered", "ecc": False}},
+        {"slot": "B", "base": {"moduleFamily": "unbuffered", "ecc": False}},
+    ]
+    check("no false-positive warning on a matched kit",
+          compatibility_warnings(matched_kit), [])
+
+    with tempfile.NamedTemporaryFile(suffix=".bin") as tf:
+        tf.write(d)
+        tf.flush()
+        file_modules = load_modules_from_files([tf.name])
+        check("offline file input decodes identically to live parse_module",
+              file_modules[0]["base"]["part"] if file_modules else None,
+              "KF3200C16D4/16GX")
+
     for bad, why in [("abc", "not a valid integer"), ("0", "must be positive"), ("", "no frequencies")]:
         try:
             parse_freqs(bad)
@@ -598,10 +788,18 @@ def parse_freqs(raw):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("spd_files", nargs="*", metavar="FILE",
+                     help="decode raw SPD dump(s) instead of live sysfs -- each must be "
+                          "exactly 512 bytes, e.g. produced with "
+                          "`cat /sys/bus/i2c/drivers/ee1004/1-0050/eeprom > stick.bin`. "
+                          "Lets you combine dumps taken one module at a time, or analyze "
+                          "dumps from another machine.")
     ap.add_argument("--freqs", default="2400,2666,2933,3000,3200",
                      help="comma-separated candidate MT/s values (default: %(default)s)")
     ap.add_argument("--json", action="store_true",
-                     help="dump raw decoded data as JSON instead of the text report")
+                     help="dump decoded data as JSON instead of the text report, including "
+                          "the same computed worst-case timings and match table the text "
+                          "report shows (not just the raw per-module decode)")
     ap.add_argument("--include-invalid", action="store_true",
                      help="include CRC-failed modules in the match table anyway (not recommended)")
     ap.add_argument("--selftest", action="store_true",
@@ -614,18 +812,35 @@ def main():
     if args.selftest:
         sys.exit(0 if selftest() else 1)
 
+    warn = lambda m: print(m, file=sys.stderr)  # noqa: E731
+
     try:
-        modules = discover_modules(warn=lambda m: print(m, file=sys.stderr))
+        if args.spd_files:
+            modules = load_modules_from_files(args.spd_files, warn=warn)
+        else:
+            modules = discover_modules(warn=warn)
+
+        freqs = parse_freqs(args.freqs)
 
         if args.json:
-            json.dump([{"slot": m["slot"], "base": m["base"], "xmp": m["xmp"],
-                        "crc": m["crc"]} for m in modules], sys.stdout, indent=2)
+            usable = [m for m in modules if m["crc"]["base_ok"] or args.include_invalid]
+            worst, source = worst_case(usable) if usable else ({}, {})
+            match_table = {
+                str(c): {p: math.ceil(round(worst[p] / (2000.0 / c), 6)) for p in BASE_PARAMS}
+                for c in freqs
+            } if usable else {}
+            json.dump({
+                "modules": [{"slot": m["slot"], "base": m["base"], "xmp": m["xmp"],
+                             "crc": m["crc"]} for m in modules],
+                "worstCaseNs": worst,
+                "worstCaseSource": source,
+                "matchTableCycles": match_table,
+                "compatibilityWarnings": compatibility_warnings(modules),
+            }, sys.stdout, indent=2)
             print()
             return
 
-        freqs = parse_freqs(args.freqs)
-        print_report(modules, freqs, args.include_invalid,
-                     warn=lambda m: print(m, file=sys.stderr))
+        print_report(modules, freqs, args.include_invalid, warn=warn)
     except SPDError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)

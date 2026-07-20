@@ -1,5 +1,64 @@
 # Release notes
 
+## v1.1.0
+
+The usefulness half of the same v1.0.0 review: v1.0.1 fixed correctness
+and safety, this addresses "what's actually missing for the stated use
+case" (a mixed kit that barely boots, being diagnosed one module at a
+time). Every new byte offset used here (moduleType, busWidth/ECC bit,
+serial number) was independently cross-checked against the live reference
+kit's `decode-dimms` output before being trusted -- same discipline as
+every previous release.
+
+### New features
+
+- **Offline SPD file input.** `spd_matchtable.py stick1.bin stick2.bin ...`
+  decodes dumps instead of live sysfs -- the actual gap for a system that
+  only boots with some sticks installed, or for combining dumps taken one
+  module at a time, from another machine, or shared in a forum post.
+  Produce one with `cat /sys/bus/i2c/drivers/ee1004/1-0050/eeprom >
+  stick.bin`.
+- **Module-type and ECC mismatch warnings.** Mixing RDIMM/LRDIMM with
+  UDIMM, or ECC with non-ECC, are the #1 and #2 reasons a mixed kit fails
+  to POST at all rather than just underperforming -- previously silent,
+  now a loud `!!` warning right after the modules table.
+- **Physical identification columns**: capacity (computed from density,
+  width, and rank -- verified against this project's own 3 known reference
+  capacities before trusting the formula), serial number, and
+  manufacture date, so "1-0053 is your problem stick" can actually be
+  matched to a physical DIMM without guessing.
+- **OC-boundary markers.** A new section lists, per candidate MT/s, which
+  installed modules are being pushed beyond their own declared JEDEC base
+  spec -- previously the match table alone gave no indication that half
+  the "candidates" were an overclock for some fraction of the kit.
+- **"Suggested starting point"**: a ready BIOS line at the SPD-guaranteed
+  ceiling, plus a clearly separate second line for generic secondary
+  timings SPD doesn't encode (`tCWL = CL-1`, a ~7.5ns `tRTP` estimate,
+  `tCCD_S=4`, and a rank/DIMM-count-based command-rate guess) -- labeled
+  as inference, not measurement.
+- `--json` now includes the same computed `worstCaseNs`, `matchTableCycles`,
+  and `compatibilityWarnings` the text report shows, not just the raw
+  per-module decode -- so scripts can consume the tool's actual product.
+
+### Fixes and polish from the same review
+
+- **Frequency-labeling rounding artifact removed.** `2000/tCKmin` on a
+  JEDEC-rounded `tCKmin` (e.g. DDR4-2400's published 0.833ns) doesn't
+  invert cleanly and previously showed as "2401 MT/s" everywhere,
+  including feeding real cycle math in the new cheat-sheet line. Snapped
+  to the nearest standard JEDEC speed bin within a tight tolerance instead
+  -- ceiling, match-table columns, and cheat sheet now agree exactly.
+- Natural slot/filename sorting (`2-0050` before `10-0050`, not the
+  reverse) instead of plain lexical sort.
+- Soft sanity warnings for a `--freqs` value outside a realistic DDR4
+  range, or below any installed module's minimum supported speed
+  (`tCKmax` exceeded) -- previously silent.
+- `--selftest` grew from 39 to 49 checks: natural sort ordering, the
+  capacity formula, module-type/ECC decoding, the frequency-snapping fix,
+  both compatibility-mismatch detectors (plus a no-false-positive check on
+  a matched kit), and a round-trip check that offline file input decodes
+  identically to live sysfs reads.
+
 ## v1.0.1
 
 Fixes from an independent review of v1.0.0, each verified against the live
