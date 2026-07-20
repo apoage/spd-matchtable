@@ -181,6 +181,24 @@ See [Releases](https://github.com/apoage/spd-matchtable/releases) for
 what's changed release to release, including audit/hardening notes for
 anyone vetting a specific version before trusting it.
 
+## No warranty
+
+This software is provided **as is, with absolutely no warranty of any
+kind** — see `LICENSE` (MIT) for the exact legal text. Nothing here
+verifies or guarantees that a suggested profile is stable on your specific
+board, CPU, or silicon; it computes what the modules' own SPD data
+implies, nothing more.
+
+Applying memory timings and voltages in your BIOS/UEFI is something you
+should understand before you do it — a wrong voltage or an unstable
+timing can corrupt data or make a system fail to boot. If you don't
+already know what CL/tRCD/tRP/tRAS or a DRAM voltage rail is, or how to
+recover a system that won't POST (clearing CMOS, restoring a BIOS default
+profile), read up on that first. Use the output here as an input to your
+own judgment, not as an instruction to follow blindly, and validate
+anything it suggests with a full Memtest86 pass before trusting it with
+real data.
+
 ## Attribution
 
 DDR4 XMP 2.0 struct offsets (the part `decode-dimms` doesn't parse at all)
