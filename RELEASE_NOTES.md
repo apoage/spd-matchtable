@@ -1,5 +1,81 @@
 # Release notes
 
+## v1.0.1
+
+Fixes from an independent review of v1.0.0, each verified against the live
+reference kit before being applied (one of the review's own claims turned
+out to have an off-by-one and was corrected rather than applied verbatim
+— see below).
+
+### Correctness
+
+- **`tRC` was understated.** The match table computed each timing as an
+  independent maximum across modules, which is valid for every parameter
+  except `tRC`: the same-bank cycle must cover the full
+  `ACT -> [tRAS] -> PRE -> [tRP] -> ACT` chain, so `tRC >= tRAS + tRP` is a
+  protocol floor, not just whatever the loosest module happens to declare.
+  On the reference 4-module kit this was measurably wrong: worst-case
+  `tRAS + tRP` = 46.375 ns vs. the previously-reported worst-case `tRC` of
+  45.75 ns — a real, provable 0.625 ns understatement, confirmed before
+  fixing. `worst_case()` now enforces this floor and annotates the source
+  as e.g. `1-0053 (tRAS+tRP floor)` instead of silently substituting a
+  number with no explanation.
+
+### Safety
+
+- **Rejects non-DDR4 and non-standard-timebase SPD data.** Previously
+  nothing checked that byte 0x02 actually says DDR4, or that the SPD
+  timebase encoding (byte 0x11) matches the MTB=125ps/FTB=1ps assumption
+  the whole decoder hardcodes — a DDR3 module (or any SPD with a
+  non-standard timebase) wired to `ee1004`, whether by a manual
+  `new_device` mistake or an unexpected i2c-mux target, would have been
+  decoded and trusted with confident, wrong numbers. Both are now checked
+  and rejected with a specific error.
+  - Note on the review that flagged this: it identified the right gap but
+    cited the wrong byte offset for the timebase check (0x10 instead of
+    0x11 — 0x10 is the tail of an unrelated reserved field). Re-derived
+    the offset independently by replicating the exact upstream C# struct
+    field order before writing the fix, rather than applying the
+    suggested line as given.
+- **Rejects negative/nonsensical decoded timings and out-of-range
+  `tCKmin`.** A crafted or corrupted-but-CRC-valid EEPROM could previously
+  decode to e.g. a negative `tRRD_S` and have it flow silently into the
+  match table as "0 cycles, no complaint." Every base timing is now
+  bounds-checked, and a corrupt XMP profile is treated as absent (not
+  fatal to the rest of the module) rather than surfaced as a bogus
+  number.
+- **`--include-invalid` no longer disappears after the warning line.** A
+  visible banner now repeats directly under the match table itself when
+  a CRC-failed module was force-included, so the caveat survives even if
+  only the table gets copy-pasted or screenshotted elsewhere.
+
+### Output
+
+- **The 80-column claim is now enforced, not just documented.** Tables
+  wider than 80 columns (e.g. a long `--freqs` list, or the full XMP
+  detail columns) are automatically paginated into side-by-side column
+  groups instead of silently overflowing the line — the constant
+  governing this was previously defined but never actually referenced by
+  the table renderer.
+- Restored the full XMP profile columns (`FAW`, `RRD_S`, `RRD_L`) that
+  v1.0.0 had dropped to force-fit one specific case under 80 columns;
+  pagination makes that trade-off unnecessary now.
+- The "ceiling" line now names which module(s) are the limiting factor
+  (`Base SPD ceiling: 2401 MT/s (limited by 1-0050, 1-0051)`) instead of
+  just asserting a number, and drops the word "guaranteed," which
+  overstated what base-SPD-only data can actually promise about real
+  training stability.
+
+### Testing
+
+- `--selftest` grew from 29 to 39 checks, adding coverage for exactly the
+  failure paths above: a CRC-repaired non-DDR4 mutation, a CRC-repaired
+  bad-timebase mutation, direct checks on the negative-timing guard, a
+  synthetic two-module case reproducing the `tRC` bug above byte-for-byte,
+  and `--freqs` argument-parsing edge cases. The happy-path fixture proves
+  the decoder is accurate; these prove it actually refuses bad input
+  instead of confidently decoding it.
+
 ## v1.0.0
 
 Initial release.

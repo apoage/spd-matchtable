@@ -26,17 +26,6 @@ speed), and computes the **worst-case (governing) requirement per timing
 across all installed modules** at a set of candidate clock speeds — i.e.
 the tightest setting every stick can actually agree to at once.
 
-## How it compares
-
-| Tool | Platform | Reads XMP | Cross-module worst-case table |
-|---|---|---|---|
-| `decode-dimms` (i2c-tools) | Linux CLI | No | No |
-| hardinfo | Linux GUI | Partial | No |
-| Thaiphoon Burner | Windows, GUI | Yes, excellent | No — manual comparison only |
-| RAMMon | Windows | Basic | No |
-| Ryzen DRAM Calculator / ZenTimings | Windows | N/A | No — tunes for one known IC, not multiple installed modules |
-| **spd-matchtable** | **Linux CLI** | **Yes** | **Yes, automatic** |
-
 ## Requirements
 
 - Linux with the `ee1004` kernel module bound (standard on any distro with a
@@ -81,7 +70,7 @@ No build step, no dependencies to install.
 | 1-0053 | KF432C16BB/8     | 1    | x16   | 16Gb    | 3200   | OK  |
 +--------+------------------+------+-------+---------+--------+-----+
 
-Guaranteed-for-all ceiling (no OC on any module): 2401 MT/s
+Base SPD ceiling: 2401 MT/s (limited by 1-0050, 1-0051)
 
 === Match table: cycles needed to satisfy ALL modules, per candidate MT/s ===
 +-------+------+------+------+------+------+
@@ -89,9 +78,19 @@ Guaranteed-for-all ceiling (no OC on any module): 2401 MT/s
 +-------+------+------+------+------+------+
 | CL    | 17   | 19   | 21   | 21   | 23   |
 | tRCD  | 17   | 19   | 21   | 21   | 23   |
+| tRC   | 56   | 62   | 69   | 70   | 75   |
 ...
 +-------+------+------+------+------+------+
 ```
+
+`tRC` is enforced as at least `tRAS + tRP` (the physical
+ACT→[tRAS]→PRE→[tRP]→ACT chain), not just the largest value any one module
+happens to declare — some vendors' own SPD data lists a `tRC` smaller than
+their own `tRAS+tRP`, so this floor is computed explicitly rather than
+trusted to fall out of a per-parameter maximum.
+
+A table wider than 80 columns (e.g. a long `--freqs` list) is automatically
+split into multiple side-by-side pages rather than overflowing the line.
 
 Read the `Param` rows as: "if you want to run at this MT/s, every one of
 these values needs to be at least this many cycles, because at least one
@@ -123,8 +122,9 @@ from.
   layout, and silicon lottery — always run a full Memtest86 pass on
   anything this suggests before trusting it with real data (the tool
   reprints this reminder at the end of every run).
-- A module that fails its own SPD CRC check is excluded from the match
-  table by default and clearly flagged, rather than silently included.
+- A module that fails its own SPD CRC check, isn't DDR4, uses a
+  non-standard timebase encoding, or decodes to a negative/nonsensical
+  timing is rejected with a clear error rather than silently trusted.
 
 See [Releases](https://github.com/apoage/spd-matchtable/releases) for
 what's changed release to release, including audit/hardening notes for

@@ -34,8 +34,9 @@ import glob
 import json
 import math
 import sys
+import textwrap
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 MTB = 0.125  # ns per medium-timebase tick
 FTB = 0.001  # ns per fine-timebase tick
@@ -91,14 +92,33 @@ def verify_crc(d):
     }
 
 
+DDR4_TYPE = 0x0C
+STANDARD_TIMEBASE = 0x00  # byte 0x11: only combination JEDEC defines (MTB=125ps, FTB=1ps)
+TCKMIN_SANE_RANGE = (0.3, 3.0)  # ns; covers ~666-6666 MT/s, comfortably beyond real DDR4 bins
+
+
+def _nonneg(name, ns):
+    if ns < 0:
+        raise SPDError(f"{name} computed as negative ({ns} ns) -- SPD data looks corrupt/crafted")
+    return ns
+
+
 def parse_base(d):
+    if d[0x02] != DDR4_TYPE:
+        raise SPDError(f"not a DDR4 SPD (memory type byte = 0x{d[0x02]:02X}, expected 0x{DDR4_TYPE:02X})")
+    if d[0x11] != STANDARD_TIMEBASE:
+        raise SPDError(f"unsupported SPD timebase encoding (byte 0x11 = 0x{d[0x11]:02X}); "
+                        f"this decoder assumes the standard MTB=125ps/FTB=1ps JEDEC combination")
+
     banks = d[0x04]
     org = d[0x0C]
     tCKmin = d[0x12] * MTB + s8(d[0x7D]) * FTB
     tCKmax = d[0x13] * MTB + s8(d[0x7C]) * FTB
 
-    if tCKmin <= 0:
-        raise SPDError("tCKmin is zero or negative -- SPD data looks blank/corrupt")
+    lo, hi = TCKMIN_SANE_RANGE
+    if not (lo <= tCKmin <= hi):
+        raise SPDError(f"tCKmin={tCKmin}ns is outside the sane range {TCKMIN_SANE_RANGE} -- "
+                        f"SPD data looks blank/corrupt")
 
     rasRC = d[0x1B]
     ras = ((rasRC & 0x0F) << 8) | d[0x1C]
@@ -128,21 +148,21 @@ def parse_base(d):
         "tCKmin": round(tCKmin, 4),
         "tCKmax": round(tCKmax, 4),
         "freq_max": round(2000 / tCKmin, 1),
-        "CL": round(d[0x18] * MTB + s8(d[0x7B]) * FTB, 4),
-        "tRCD": round(d[0x19] * MTB + s8(d[0x7A]) * FTB, 4),
-        "tRP": round(d[0x1A] * MTB + s8(d[0x79]) * FTB, 4),
-        "tRAS": round(ras * MTB, 4),
-        "tRC": round(rc * MTB + s8(d[0x78]) * FTB, 4),
-        "tRFC1": round(rfc1 * MTB, 4),
-        "tRFC2": round(rfc2 * MTB, 4),
-        "tRFC4": round(rfc4 * MTB, 4),
-        "tFAW": round(faw * MTB, 4),
-        "tRRDS": round(d[0x26] * MTB + s8(d[0x77]) * FTB, 4),
-        "tRRDL": round(d[0x27] * MTB + s8(d[0x76]) * FTB, 4),
-        "tCCDL": round(d[0x28] * MTB + s8(d[0x75]) * FTB, 4),
-        "tWR": round(d[0x2A] * MTB, 4),
-        "tWTRS": round(d[0x2C] * MTB, 4),
-        "tWTRL": round(d[0x2D] * MTB, 4),
+        "CL": round(_nonneg("CL", d[0x18] * MTB + s8(d[0x7B]) * FTB), 4),
+        "tRCD": round(_nonneg("tRCD", d[0x19] * MTB + s8(d[0x7A]) * FTB), 4),
+        "tRP": round(_nonneg("tRP", d[0x1A] * MTB + s8(d[0x79]) * FTB), 4),
+        "tRAS": round(_nonneg("tRAS", ras * MTB), 4),
+        "tRC": round(_nonneg("tRC", rc * MTB + s8(d[0x78]) * FTB), 4),
+        "tRFC1": round(_nonneg("tRFC1", rfc1 * MTB), 4),
+        "tRFC2": round(_nonneg("tRFC2", rfc2 * MTB), 4),
+        "tRFC4": round(_nonneg("tRFC4", rfc4 * MTB), 4),
+        "tFAW": round(_nonneg("tFAW", faw * MTB), 4),
+        "tRRDS": round(_nonneg("tRRDS", d[0x26] * MTB + s8(d[0x77]) * FTB), 4),
+        "tRRDL": round(_nonneg("tRRDL", d[0x27] * MTB + s8(d[0x76]) * FTB), 4),
+        "tCCDL": round(_nonneg("tCCDL", d[0x28] * MTB + s8(d[0x75]) * FTB), 4),
+        "tWR": round(_nonneg("tWR", d[0x2A] * MTB), 4),
+        "tWTRS": round(_nonneg("tWTRS", d[0x2C] * MTB), 4),
+        "tWTRL": round(_nonneg("tWTRL", d[0x2D] * MTB), 4),
     }
 
 
@@ -150,8 +170,9 @@ def parse_xmp_profile(p):
     voltage_raw = p[0]
     voltage = ((voltage_raw & 0x80) >> 7) * 100 + (voltage_raw & 0x7F)
     tCK = p[3] * MTB + s8(p[38]) * FTB
-    if tCK <= 0:
-        return None
+    lo, hi = TCKMIN_SANE_RANGE
+    if not (lo <= tCK <= hi):
+        return None  # a bogus/corrupt profile is treated as absent, not fatal to the module
 
     ras = ((p[11] & 0x0F) << 8) | p[12]
     rc = ((p[11] & 0xF0) << 4) | p[13]
@@ -166,6 +187,10 @@ def parse_xmp_profile(p):
     rp = p[10] * MTB + s8(p[35]) * FTB
     rrds = p[22] * MTB + s8(p[33]) * FTB
     rrdl = p[23] * MTB + s8(p[32]) * FTB
+
+    values_ns = [cl, rcd, rp, ras * MTB, rc * MTB, rfc1 * MTB, faw * MTB, rrds, rrdl]
+    if any(v < 0 for v in values_ns):
+        return None  # same corrupt-data guard as the base block, just non-fatal here
 
     return {
         "voltage": voltage / 100,
@@ -223,6 +248,15 @@ def discover_modules(warn=print):
 
 
 def worst_case(modules):
+    """Independent per-parameter maxima, EXCEPT tRC: same-bank ACT->ACT must
+    cover the full ACT-[tRAS]->PRE-[tRP]->ACT chain, so tRC is a protocol
+    floor of tRAS+tRP, not just a value some module happens to declare.
+    A module's own SPD can (and in practice does) list tRC < its own
+    tRAS+tRP -- real vendor data, not a decoding bug -- so this floor has
+    to be enforced explicitly rather than trusted to fall out of the
+    per-module numbers. Taking system-wide worst-tRAS + worst-tRP as the
+    floor is a safe upper bound: since each is independently >= any single
+    module's own value, their sum is >= that module's own tRAS+tRP too."""
     worst, source = {}, {}
     for p in BASE_PARAMS:
         best_v, best_s = -1, None
@@ -231,6 +265,15 @@ def worst_case(modules):
             if v > best_v:
                 best_v, best_s = v, m["slot"]
         worst[p], source[p] = best_v, best_s
+
+    floor = worst["tRAS"] + worst["tRP"]
+    if floor > worst["tRC"]:
+        worst["tRC"] = floor
+        if source["tRAS"] == source["tRP"]:
+            source["tRC"] = f"{source['tRAS']} (tRAS+tRP floor)"
+        else:
+            source["tRC"] = f"{source['tRAS']}+{source['tRP']} (tRAS+tRP floor)"
+
     return worst, source
 
 
@@ -259,9 +302,48 @@ def render_table(headers, rows):
     return lines
 
 
-def print_table(headers, rows):
-    for line in render_table(headers, rows):
-        print(line)
+def _column_widths(headers, rows):
+    widths = [len(str(h)) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    return widths
+
+
+def _paginate_columns(headers, rows, max_width):
+    """Split columns into left-to-right pages that each fit max_width,
+    always repeating column 0 (the row label) on every page. Enforces the
+    80-column claim unconditionally instead of only holding for the
+    default --freqs list."""
+    widths = _column_widths(headers, rows)
+
+    def page_width(idxs):
+        return sum(widths[i] + 3 for i in idxs) + 1
+
+    pages, i, n = [], 1, len(headers)
+    if n <= 1:
+        return [[0]]
+    while i < n:
+        page = [0]
+        while i < n:
+            if page_width(page + [i]) > max_width and len(page) > 1:
+                break
+            page.append(i)
+            i += 1
+        pages.append(page)
+    return pages
+
+
+def print_table(headers, rows, max_width=None):
+    max_width = MAX_TERM_WIDTH if max_width is None else max_width
+    pages = _paginate_columns(headers, rows, max_width)
+    for n, idxs in enumerate(pages):
+        if len(pages) > 1:
+            print(f"-- columns {n + 1}/{len(pages)} --")
+        page_headers = [headers[i] for i in idxs]
+        page_rows = [[row[i] for i in idxs] for row in rows]
+        for line in render_table(page_headers, page_rows):
+            print(line)
 
 
 def print_report(modules, freqs, include_invalid, warn=print):
@@ -294,8 +376,14 @@ def print_report(modules, freqs, include_invalid, warn=print):
 
     worst, source = worst_case(usable)
     guaranteed = min(m["base"]["freq_max"] for m in usable)
+    limiters = [m["slot"] for m in usable if m["base"]["freq_max"] == guaranteed]
 
-    print(f"\nGuaranteed-for-all ceiling (no OC on any module): {guaranteed:.0f} MT/s")
+    print()
+    for line in textwrap.wrap(f"Base SPD ceiling: {guaranteed:.0f} MT/s "
+                               f"(limited by {', '.join(limiters)})", MAX_TERM_WIDTH):
+        print(line)
+    print("Note: this is what every module's own spec independently allows, not a")
+    print("guarantee this board's memory controller trains reliably at that speed.")
 
     print("\n=== Worst-case (governing) requirement per timing ===")
     print_table(["Param", "ns", "Source"],
@@ -305,6 +393,10 @@ def print_report(modules, freqs, include_invalid, warn=print):
     print_table(["Param"] + [str(c) for c in freqs],
                 [[p] + [math.ceil(round(worst[p] / (2000.0 / c), 6)) for c in freqs]
                  for p in BASE_PARAMS])
+    invalid_included = [m["slot"] for m in usable if not m["crc"]["base_ok"]]
+    if invalid_included:
+        print(f"WARNING: table above includes CRC-failed module(s): "
+              f"{', '.join(invalid_included)} -- numbers may be corrupt.")
 
     print("\n=== Embedded XMP profiles (informational only, not used in match table) ===")
     xmp_rows = []
@@ -320,11 +412,11 @@ def print_report(modules, freqs, include_invalid, warn=print):
             if pr:
                 xmp_rows.append([m["slot"] + unverified, label, f"{pr['freq']:.0f}",
                                   pr["CL"], pr["tRCD"], pr["tRP"], pr["tRAS"], pr["tRC"],
-                                  pr["tRFC1"], pr["voltage"]])
+                                  pr["tRFC1"], pr["tFAW"], pr["tRRDS"], pr["tRRDL"],
+                                  pr["voltage"]])
     if xmp_rows:
         print_table(["Slot", "Prof", "MT/s", "CL", "RCD", "RP", "RAS", "RC",
-                      "RFC1", "Volt"], xmp_rows)
-        print("(FAW/RRD_S/RRD_L omitted for width -- see --json for the full set)")
+                      "RFC1", "FAW", "RRDS", "RRDL", "Volt"], xmp_rows)
     else:
         print("(none found on any module)")
     if no_xmp:
@@ -417,6 +509,63 @@ def selftest():
         check("profile2 freq", p2["freq"], 3003.0)
         check("profile2 CL-RCD-RP-RAS", (p2["CL"], p2["tRCD"], p2["tRP"], p2["tRAS"]), (15, 17, 17, 36))
         check("profile2 voltage", p2["voltage"], 1.35)
+
+    # --- Failure-path checks --------------------------------------------
+    # The happy path above proves the decoder is accurate; these prove it
+    # actually refuses bad input instead of confidently decoding garbage.
+    # Mutations are CRC-repaired so each test isolates ONE guard at a time
+    # -- e.g. a real-world "wrong EEPROM wired to ee1004" has a perfectly
+    # valid CRC over its own (wrong-format) data.
+
+    def repaired(offset, value):
+        b = bytearray(d)
+        b[offset] = value
+        crc1 = crc16(bytes(b[0:0x7E]))
+        b[0x7E], b[0x7F] = crc1 & 0xFF, (crc1 >> 8) & 0xFF
+        return bytes(b)
+
+    def expect_rejected(name, data, needle):
+        try:
+            parse_module(data, "selftest-mutant")
+            check(name, "no exception raised", f"SPDError containing {needle!r}")
+        except SPDError as e:
+            check(name, needle in str(e), True)
+
+    expect_rejected("rejects non-DDR4 memory type byte",
+                     repaired(0x02, 0x0B), "not a DDR4 SPD")
+    expect_rejected("rejects non-standard timebase byte",
+                     repaired(0x11, 0x01), "timebase encoding")
+
+    try:
+        _nonneg("test", -1.0)
+        check("_nonneg rejects negative ns", "no exception raised", "SPDError")
+    except SPDError:
+        check("_nonneg rejects negative ns", True, True)
+    check("_nonneg passes through non-negative", _nonneg("test", 0.0), 0.0)
+
+    # Synthetic two-module case matching the real bug this was written to
+    # catch: module A has the highest declared tRC but NOT the highest
+    # tRAS/tRP; module B has the highest tRAS+tRP but a lower (real vendor
+    # data) declared tRC. A naive independent-max would under-report tRC.
+    fake_modules = [
+        {"slot": "A", "base": {p: 20.0 for p in BASE_PARAMS}},
+        {"slot": "B", "base": {p: 20.0 for p in BASE_PARAMS}},
+    ]
+    fake_modules[0]["base"].update(tRAS=32.0, tRP=13.75, tRC=45.75)
+    fake_modules[1]["base"].update(tRAS=32.375, tRP=14.0, tRC=44.5)
+    w, src = worst_case(fake_modules)
+    check("tRC floor applied when a module's own tRC < its tRAS+tRP",
+          w["tRC"], round(32.375 + 14.0, 4))
+    check("tRC floor source is annotated, not silently substituted",
+          "floor" in src["tRC"], True)
+
+    for bad, why in [("abc", "not a valid integer"), ("0", "must be positive"), ("", "no frequencies")]:
+        try:
+            parse_freqs(bad)
+            check(f"parse_freqs rejects {bad!r}", "no exception raised", why)
+        except SPDError as e:
+            check(f"parse_freqs rejects {bad!r}", why in str(e), True)
+    check("parse_freqs dedupes and sorts", parse_freqs("3200,2400,3200"), [2400, 3200])
 
     failed = 0
     for name, ok, actual, expected in checks:
