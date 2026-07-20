@@ -229,31 +229,17 @@ struct and against `decode-dimms` (i2c-tools) output.
 ## Built with AI assistance
 
 This project was built in collaboration with two AI models, and neither
-was error-free — that's worth recording honestly, not smoothing over.
+was/is error-free.
 
 **Claude** (Anthropic) did most of the implementation, the wiki, and the
-repo scaffolding, and made real mistakes in the process, each caught
-before shipping rather than after: an early manual byte-offset count
-(SPD byte 0x11) was momentarily miscounted before a re-check caught it;
-a hand-rewrapped hex string for the `--selftest` fixture silently dropped
-characters (478 bytes instead of the required 512), caught only because
-the selftest itself failed; and an earlier chat summary stated `CL=22`
-at 3200 MT/s where the correct, later-verified value is `23` (a plain
-arithmetic slip — 14.0ns / 0.625ns rounds up, not down).
+repo scaffolding.
 
-**Kimi** (Moonshot AI) performed an independent review of v1.0.0 that
-caught a real, previously-unnoticed bug (the `tRC` understatement — see
-[[Worst Case Methodology]](https://github.com/apoage/spd-matchtable/wiki/Worst-Case-Methodology))
-and correctly flagged a display-only rounding artifact (`2401` vs the
-real `2400` MT/s bin) — but one of its own suggested fixes cited the
-wrong byte offset (`0x10` instead of the correct `0x11`), which had to be
-independently re-derived before being applied.
+**Kimi** (Moonshot AI) performed an independent review of v1.0.0.
 
-Same mechanism caught every mistake above, regardless of which model
-made it: check against real reference hardware and a second independent
-source before trusting a number. That's the actual point of this
-project's development history — not a scoreboard of whose output was
-cleaner.
+Regardless of which model made it: check against real reference
+hardware and a second independent source before trusting a number.
+That's the actual point of this project's development history — not a
+scoreboard of whose output was cleaner.
 
 ## Contributing
 
